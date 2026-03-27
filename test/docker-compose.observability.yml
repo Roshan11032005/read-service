@@ -1,0 +1,81 @@
+# ─── Observability Stack for read-service Integration Tests ───────────────────
+#
+# Usage:
+#   docker compose -f test/docker-compose.observability.yml up -d
+#
+# Then run k6 tests:
+#   k6 run --out experimental-opentelemetry test/k6/smoke.js
+#
+# Access:
+#   Grafana:    http://localhost:3000  (admin/admin)
+#   Prometheus: http://localhost:9090
+#   Tempo:      http://localhost:3200
+#   OTEL gRPC:  localhost:4317
+#   OTEL HTTP:  localhost:4318
+# ──────────────────────────────────────────────────────────────────────────────
+
+services:
+  # ── OpenTelemetry Collector ──────────────────────────────────────────────────
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.96.0
+    command: ["--config=/etc/otel/config.yaml"]
+    volumes:
+      - ./otel-collector/config.yaml:/etc/otel/config.yaml:ro
+    ports:
+      - "4317:4317" # OTLP gRPC  (k6 + read-service send here)
+      - "4318:4318" # OTLP HTTP  (read-service can also use this)
+    depends_on:
+      - prometheus
+      - tempo
+    restart: unless-stopped
+
+  # ── Prometheus ───────────────────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=30d"
+      - "--web.enable-remote-write-receiver" # required for OTEL push
+      - "--web.enable-lifecycle"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    restart: unless-stopped
+
+  # ── Tempo (Distributed Tracing) ──────────────────────────────────────────────
+  tempo:
+    image: grafana/tempo:2.4.1
+    command: ["-config.file=/etc/tempo/tempo.yaml"]
+    volumes:
+      - ./tempo/tempo.yaml:/etc/tempo/tempo.yaml:ro
+      - tempo_data:/var/tempo
+    ports:
+      - "3200:3200" # Tempo HTTP API
+    restart: unless-stopped
+
+  # ── Grafana ──────────────────────────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:10.4.1
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+      - tempo
+    restart: unless-stopped
+
+volumes:
+  prometheus_data:
+  tempo_data:
+  grafana_data:
